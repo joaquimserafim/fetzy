@@ -170,14 +170,33 @@ export type Result<T, E = Error> =
   | { readonly ok: false; readonly error: E };
 ```
 
+#### What errors can I see?
+
+The library defines exactly **one error type — [`HttpError`](#httperror)** — and it's only thrown by the JSON paths (`fetchx.json`, `client.json.*`) on non-2xx responses. Every other failure comes straight from the platform `fetch`:
+
+- **Network error** — what `fetch` itself rejects with (typically a `TypeError` like `"fetch failed"`).
+- **Timeout** — an `Error` with `name === "TimeoutError"` (set by this library when the internal timeout fires).
+- **Caller abort** — whatever you passed to `controller.abort(reason)`, or a `DOMException` `AbortError` if no reason was given.
+
+**Non-2xx is handled differently per path:**
+
+| Path                                        | Behavior on non-2xx                                       |
+| ------------------------------------------- | --------------------------------------------------------- |
+| `fetchx`, `client.get/post/put/patch/delete` | Resolves to a `Response`; you check `response.ok` yourself. **Never throws / returns `HttpError`.** |
+| `fetchx.json`, `client.json.*`              | **Throws `HttpError`** (or `{ ok: false, error: HttpError }` from `.try`). |
+
+The three failure-handling styles — `try/catch`, `.try` returning a `Result`, and `tryAsync(promise)` — all see the **same** set of errors. They differ only in how you read them. Note that the static type of `error` is always `Error` (or `HttpError extends Error` at runtime — narrow with `instanceof HttpError` when you need the status/body).
+
 ```ts
-import { fetchx, tryAsync, HttpError } from "@joaquimserafim/fetchx";
+import { fetchx, HttpError } from "@joaquimserafim/fetchx";
+
+type User = { id: number; name: string };
 
 const res = await fetchx.try("https://api.example.com/health", { timeout: 2000 });
 if (res.ok) {
     res.data;     // Response
 } else {
-    res.error;    // Error (TimeoutError, network error, caller abort)
+    res.error;    // Error  (network error | TimeoutError | caller abort)
 }
 // → { ok: true, data: Response } | { ok: false, error: Error }
 
@@ -185,7 +204,10 @@ const u = await fetchx.json.try<User>("https://api.example.com/users/1");
 if (u.ok) {
     u.data;       // User
 } else {
-    u.error;      // Error | HttpError (HttpError extends Error)
+    u.error;      // Error  (runtime: HttpError on non-2xx | TimeoutError | network error)
+    if (u.error instanceof HttpError) {
+        u.error.status;  // narrow to read .status / .body / .response
+    }
 }
 // → { ok: true, data: User } | { ok: false, error: Error }
 ```
