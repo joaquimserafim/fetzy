@@ -1,0 +1,5 @@
+# Standalone project. This file exists so pnpm stops walking up the directory
+# tree and doesn't discover ~/pnpm-workspace.yaml (which would otherwise make
+# pnpm treat fetchx as a workspace member of the home directory).
+packages:
+  - .
