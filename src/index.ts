@@ -2,7 +2,10 @@
 export const DEFAULT_TIMEOUT_MS = 10_000;
 
 export type RequestOptions = RequestInit & {
-	/** Abort the request after this many ms. Defaults to {@link DEFAULT_TIMEOUT_MS}. */
+	/**
+	 * Abort the request after this many ms. Defaults to {@link DEFAULT_TIMEOUT_MS}.
+	 * A non-positive or non-finite value (`0`, negative, `Infinity`, `NaN`) disables the timeout.
+	 */
 	timeout?: number;
 	/** Defaults to global `fetch` at call time; pass a snapshot to bypass monkey-patched `fetch`. */
 	fetchImpl?: typeof fetch;
@@ -139,15 +142,20 @@ async function fetchxImpl(
 		...fetchOptions
 	} = options;
 	const doFetch = fetchImpl ?? fetch;
+	// A non-positive or non-finite timeout (0, negative, Infinity, NaN) disables the
+	// timeout entirely, instead of arming a 0 ms timer that aborts on the next tick.
+	const timeoutActive = Number.isFinite(timeout) && timeout > 0;
 	const timeoutController = new AbortController();
-	const timeoutId = setTimeout(() => {
-		// Plain Error (portable across Node, browsers, edge runtimes, WASM).
-		// `DOMException` is not universally available; matching `err.name === "TimeoutError"`
-		// works on both Error and DOMException so callers can distinguish timeouts.
-		const err = new Error(`fetchx timeout after ${timeout}ms`);
-		err.name = "TimeoutError";
-		timeoutController.abort(err);
-	}, timeout);
+	const timeoutId = timeoutActive
+		? setTimeout(() => {
+				// Plain Error (portable across Node, browsers, edge runtimes, WASM).
+				// `DOMException` is not universally available; matching `err.name === "TimeoutError"`
+				// works on both Error and DOMException so callers can distinguish timeouts.
+				const err = new Error(`fetchx timeout after ${timeout}ms`);
+				err.name = "TimeoutError";
+				timeoutController.abort(err);
+			}, timeout)
+		: undefined;
 	const startTime = nowMs();
 
 	let response: Response;
@@ -156,11 +164,11 @@ async function fetchxImpl(
 			...fetchOptions,
 			signal: combineSignals([
 				callerSignal ?? undefined,
-				timeoutController.signal,
+				timeoutActive ? timeoutController.signal : undefined,
 			]),
 		});
 	} finally {
-		clearTimeout(timeoutId);
+		if (timeoutId !== undefined) clearTimeout(timeoutId);
 	}
 
 	const durationMs = nowMs() - startTime;
@@ -210,14 +218,20 @@ export class HttpError extends Error {
 }
 
 export type FetchJsonOptions = Omit<RequestOptions, "withDuration"> & {
-	/** Plain value to send as a JSON body. Stringified with `JSON.stringify`; sets `content-type: application/json` if unset. */
+	/** Plain value to send as a JSON body. Stringified with `JSON.stringify`; sets `content-type: application/json` if unset. Mutually exclusive with `body`. */
 	json?: unknown;
 };
 
 const JSON_MIME = "application/json";
 
-const isJsonContentType = (contentType: string | null): boolean =>
-	!!contentType && /\bjson\b/i.test(contentType);
+const isJsonContentType = (contentType: string | null): boolean => {
+	if (!contentType) return false;
+	// Compare only the media type, ignoring parameters (e.g. "; charset=utf-8"),
+	// and match "json" subtypes plus the structured "+json" suffix — e.g.
+	// application/json, text/json, application/ld+json, application/vnd.api+json.
+	const mediaType = contentType.split(";", 1)[0].trim().toLowerCase();
+	return /\/([\w.-]+\+)?json$/.test(mediaType);
+};
 
 const parseResponseBody = async (response: Response): Promise<unknown> => {
 	if (response.status === 204 || response.status === 205) return undefined;
@@ -244,6 +258,11 @@ async function fetchxJsonImpl<T = unknown>(
 	options: FetchJsonOptions = {},
 ): Promise<T> {
 	const { json, headers, body, ...rest } = options;
+	if (json !== undefined && body != null) {
+		throw new TypeError(
+			"fetchx.json: provide either `json` or `body`, not both",
+		);
+	}
 	const finalHeaders = new Headers(headers);
 	if (!finalHeaders.has("accept")) finalHeaders.set("accept", JSON_MIME);
 	let finalBody = body;
@@ -259,9 +278,13 @@ async function fetchxJsonImpl<T = unknown>(
 		body: finalBody,
 	});
 	if (!response.ok) {
-		const errBody = await parseResponseBody(response).catch(
-			() => undefined,
-		);
+		// Read the error body from a clone so `err.response` stays re-readable.
+		// Only swallow JSON parse failures (best-effort body); a genuine body-read
+		// failure (aborted/dropped stream) surfaces instead of being masked.
+		const errBody = await parseResponseBody(response.clone()).catch((e) => {
+			if (e instanceof SyntaxError) return undefined;
+			throw e;
+		});
 		throw new HttpError(response, errBody);
 	}
 	return (await parseResponseBody(response)) as T;
@@ -353,9 +376,7 @@ export type ClientDefaults = {
 	fetchImpl?: typeof fetch;
 };
 
-type RequestOptionsNoMethod = Omit<RequestOptions, "method">;
 type RequestOptionsNoMethodBody = Omit<RequestOptions, "method" | "body">;
-type JsonOptionsNoMethod = Omit<FetchJsonOptions, "method" | "json">;
 type JsonOptionsNoMethodBody = Omit<
 	FetchJsonOptions,
 	"method" | "json" | "body"
@@ -365,7 +386,7 @@ export type Client = {
 	fetchx(path: string | URL, options?: RequestOptions): Promise<Response>;
 	get(
 		path: string | URL,
-		options?: RequestOptionsNoMethod,
+		options?: RequestOptionsNoMethodBody,
 	): Promise<Response>;
 	post(
 		path: string | URL,
@@ -384,12 +405,12 @@ export type Client = {
 	): Promise<Response>;
 	delete(
 		path: string | URL,
-		options?: RequestOptionsNoMethod,
+		options?: RequestOptionsNoMethodBody,
 	): Promise<Response>;
 	json: {
 		get<T = unknown>(
 			path: string | URL,
-			options?: JsonOptionsNoMethod,
+			options?: JsonOptionsNoMethodBody,
 		): Promise<T>;
 		post<T = unknown>(
 			path: string | URL,
@@ -408,7 +429,7 @@ export type Client = {
 		): Promise<T>;
 		delete<T = unknown>(
 			path: string | URL,
-			options?: JsonOptionsNoMethod,
+			options?: JsonOptionsNoMethodBody,
 		): Promise<T>;
 	};
 };

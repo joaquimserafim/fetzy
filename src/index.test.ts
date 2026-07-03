@@ -414,6 +414,65 @@ describe("fetchx", () => {
 			}
 		});
 	});
+
+	describe("timeout disabling (non-positive / non-finite)", () => {
+		it("timeout: 0 disables the timeout (request is not aborted)", async () => {
+			const spy = vi.spyOn(globalThis, "setTimeout");
+			globalThis.fetch = vi.fn().mockResolvedValue({ ok: true });
+
+			const res = await fetchx("https://api.example.com", { timeout: 0 });
+
+			expect(res).toEqual({ ok: true });
+			// No 0 ms abort timer was armed, and the signal is not aborted.
+			expect(spy.mock.calls.some((a) => a[1] === 0)).toBe(false);
+			const opts = (globalThis.fetch as ReturnType<typeof vi.fn>).mock
+				.calls[0][1] as RequestInit;
+			expect(opts.signal?.aborted).toBe(false);
+			spy.mockRestore();
+		});
+
+		it.each([
+			0,
+			-1,
+			Number.POSITIVE_INFINITY,
+			Number.NaN,
+		])("does not arm a timer for timeout=%s", async (timeout) => {
+			const spy = vi.spyOn(globalThis, "setTimeout");
+			globalThis.fetch = vi.fn().mockResolvedValue({ ok: true });
+
+			await fetchx("https://api.example.com", { timeout });
+
+			// The only timer fetchx arms is the timeout; disabled, it must
+			// not schedule one for this delay value.
+			expect(spy.mock.calls.some((a) => Object.is(a[1], timeout))).toBe(
+				false,
+			);
+			spy.mockRestore();
+		});
+
+		it("still honors a caller signal when the timeout is disabled", async () => {
+			globalThis.fetch = vi
+				.fn()
+				.mockImplementation((_, options: RequestInit) => {
+					const signal = options?.signal as AbortSignal;
+					return new Promise((_, reject) => {
+						signal.addEventListener("abort", () => {
+							reject(signal.reason);
+						});
+					});
+				});
+
+			const controller = new AbortController();
+			const reason = new Error("user cancelled");
+			const pending = fetchx("https://api.example.com", {
+				timeout: 0,
+				signal: controller.signal,
+			});
+			setTimeout(() => controller.abort(reason), 10);
+
+			await expect(pending).rejects.toBe(reason);
+		});
+	});
 });
 
 describe("HttpError", () => {
@@ -618,6 +677,108 @@ describe("fetchx.json", () => {
 		await expect(
 			fetchx.json("https://api.example.com", { timeout: 20 }),
 		).rejects.toMatchObject({ name: "TimeoutError" });
+	});
+
+	it("parses JSON when content-type has parameters (charset)", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { "content-type": "application/json; charset=utf-8" },
+			}),
+		);
+
+		const out = await fetchx.json("https://api.example.com");
+		expect(out).toEqual({ ok: true });
+	});
+
+	it("parses structured +json subtypes (application/ld+json)", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ "@id": 1 }), {
+				status: 200,
+				headers: { "content-type": "application/ld+json" },
+			}),
+		);
+
+		const out = await fetchx.json("https://api.example.com");
+		expect(out).toEqual({ "@id": 1 });
+	});
+
+	it("does not JSON-parse when 'json' only appears in a content-type parameter", async () => {
+		// Regression: /\bjson\b/ used to match this and throw a SyntaxError on 2xx.
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response("<html>not json</html>", {
+				status: 200,
+				headers: { "content-type": 'text/html; profile="urn:json"' },
+			}),
+		);
+
+		const out = await fetchx.json<string>("https://api.example.com");
+		expect(out).toBe("<html>not json</html>");
+	});
+
+	it("does not JSON-parse application/jsonl (not a single JSON document)", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response('{"a":1}\n{"a":2}', {
+				status: 200,
+				headers: { "content-type": "application/jsonl" },
+			}),
+		);
+
+		const out = await fetchx.json<string>("https://api.example.com");
+		expect(out).toBe('{"a":1}\n{"a":2}');
+	});
+
+	it("keeps HttpError.response body re-readable (reads error body from a clone)", async () => {
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				jsonResponse(
+					{ message: "bad" },
+					{ status: 400, statusText: "Bad Request" },
+				),
+			);
+
+		try {
+			await fetchx.json("https://api.example.com/x");
+			expect.fail("expected to throw");
+		} catch (err) {
+			const httpErr = err as HttpError;
+			expect(httpErr.body).toEqual({ message: "bad" });
+			// The stored response was cloned before parsing, so its body survives.
+			await expect(httpErr.response.text()).resolves.toContain("bad");
+		}
+	});
+
+	it("throws TypeError when both `json` and `body` are provided", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
+
+		await expect(
+			fetchx.json("https://api.example.com", {
+				method: "POST",
+				json: { a: 1 },
+				body: "raw",
+			}),
+		).rejects.toBeInstanceOf(TypeError);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+	});
+
+	it("does not swallow a body-read (non-parse) failure on the error path", async () => {
+		const readErr = new Error("stream aborted");
+		const badResponse = {
+			ok: false,
+			status: 500,
+			statusText: "ISE",
+			headers: new Headers({ "content-type": "application/json" }),
+			clone() {
+				return this;
+			},
+			text: () => Promise.reject(readErr),
+		} as unknown as Response;
+		globalThis.fetch = vi.fn().mockResolvedValue(badResponse);
+
+		await expect(fetchx.json("https://api.example.com/x")).rejects.toBe(
+			readErr,
+		);
 	});
 });
 
