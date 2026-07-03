@@ -3,3 +3,4 @@ dist
 coverage
 src/bench*.ts
 .DS_Store
+progress.md

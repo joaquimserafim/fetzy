@@ -58,11 +58,14 @@
 		"url": "https://github.com/joaquimserafim/fetchx.git"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.4.15",
-		"@types/node": "^25.8.0",
-		"@vitest/coverage-v8": "4.1.6",
-		"tsdown": "^0.22.0",
+		"@biomejs/biome": "2.5.2",
+		"@types/node": "^26.1.0",
+		"@vitest/coverage-v8": "4.1.9",
+		"tsdown": "^0.22.3",
 		"typescript": "^6.0.3",
-		"vitest": "^4.1.6"
+		"vitest": "^4.1.9"
+	},
+	"dependencies": {
+		"@joaquimserafim/ts-try": "^1.1.0"
 	}
 }
