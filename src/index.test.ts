@@ -5,6 +5,7 @@ import {
 	DEFAULT_TIMEOUT_MS,
 	fetchx,
 	HttpError,
+	MaxBytesError,
 	tryAsync,
 } from "./index";
 
@@ -278,6 +279,28 @@ describe("fetchx", () => {
 				}),
 			).rejects.toBe(reason);
 		});
+
+		it("removes caller-signal listeners after a successful request (no leak)", async () => {
+			// Regression (finding #4): on the success path the fallback used to
+			// leave its abort listener attached to a reused caller signal.
+			globalThis.fetch = vi.fn().mockResolvedValue({ ok: true });
+			const controller = new AbortController();
+			const removeSpy = vi.spyOn(
+				controller.signal,
+				"removeEventListener",
+			);
+
+			await fetchx("https://api.example.com", {
+				signal: controller.signal,
+				timeout: 5000,
+			});
+
+			expect(removeSpy).toHaveBeenCalledWith(
+				"abort",
+				expect.any(Function),
+			);
+			removeSpy.mockRestore();
+		});
 	});
 
 	it("passes through the single signal when only one is provided (no combining)", async () => {
@@ -546,6 +569,20 @@ describe("fetchx.json", () => {
 		expect(out).toBe("hello there");
 	});
 
+	it("returns raw text when the response has no content-type header", async () => {
+		// Covers the null content-type branch (headers.get returns null).
+		const fake = {
+			ok: true,
+			status: 200,
+			headers: new Headers(),
+			text: () => Promise.resolve("plain body"),
+		} as unknown as Response;
+		globalThis.fetch = vi.fn().mockResolvedValue(fake);
+
+		const out = await fetchx.json<string>("https://api.example.com");
+		expect(out).toBe("plain body");
+	});
+
 	it("sets Accept: application/json by default", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
 
@@ -780,6 +817,159 @@ describe("fetchx.json", () => {
 			readErr,
 		);
 	});
+
+	it("maxBytes: resolves when the body is within the cap (streams)", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+
+		const out = await fetchx.json("https://api.example.com", {
+			maxBytes: 1000,
+		});
+		expect(out).toEqual({ ok: true });
+	});
+
+	it("maxBytes: rejects early on content-length without reading the body", async () => {
+		// The body getter throws if touched, so only the content-length
+		// short-circuit can produce the rejection — proving it happens before
+		// any stream read (this would fail if that check were removed).
+		const fake = {
+			ok: true,
+			status: 200,
+			headers: new Headers({
+				"content-type": "application/json",
+				"content-length": "5000",
+			}),
+			get body(): ReadableStream | null {
+				throw new Error(
+					"body must not be read when content-length exceeds cap",
+				);
+			},
+			text: () => Promise.reject(new Error("text must not be called")),
+		} as unknown as Response;
+		globalThis.fetch = vi.fn().mockResolvedValue(fake);
+
+		await expect(
+			fetchx.json("https://api.example.com", { maxBytes: 100 }),
+		).rejects.toBeInstanceOf(MaxBytesError);
+	});
+
+	it("maxBytes: rejects while streaming when the body exceeds the cap", async () => {
+		// Stream body carries no content-length, so the cap is enforced mid-stream.
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode("x".repeat(200)));
+				controller.close();
+			},
+		});
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(stream, {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+
+		await expect(
+			fetchx.json("https://api.example.com", { maxBytes: 100 }),
+		).rejects.toThrow(/exceeds maxBytes/);
+	});
+
+	it("maxBytes: a failing stream cancel is swallowed on overflow", async () => {
+		// cancel() is best-effort; if it rejects, the MaxBytesError still surfaces.
+		const reader = {
+			read: vi
+				.fn()
+				.mockResolvedValueOnce({
+					done: false,
+					value: new Uint8Array(200),
+				})
+				.mockResolvedValue({ done: true }),
+			cancel: vi.fn().mockRejectedValue(new Error("cancel failed")),
+		};
+		const fake = {
+			ok: true,
+			status: 200,
+			headers: new Headers({ "content-type": "application/json" }),
+			body: { getReader: () => reader },
+			text: () => Promise.resolve(""),
+		} as unknown as Response;
+		globalThis.fetch = vi.fn().mockResolvedValue(fake);
+
+		await expect(
+			fetchx.json("https://api.example.com", { maxBytes: 10 }),
+		).rejects.toBeInstanceOf(MaxBytesError);
+		expect(reader.cancel).toHaveBeenCalled();
+	});
+
+	it("maxBytes: falls back to text() when no stream is exposed", async () => {
+		const fake = {
+			ok: true,
+			status: 200,
+			headers: new Headers({ "content-type": "application/json" }),
+			body: null,
+			text: () => Promise.resolve(JSON.stringify({ ok: true })),
+		} as unknown as Response;
+		globalThis.fetch = vi.fn().mockResolvedValue(fake);
+
+		const out = await fetchx.json("https://api.example.com", {
+			maxBytes: 1000,
+		});
+		expect(out).toEqual({ ok: true });
+	});
+
+	it("maxBytes: an empty streamed body resolves to undefined", async () => {
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.close();
+			},
+		});
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(stream, {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+
+		const out = await fetchx.json("https://api.example.com", {
+			maxBytes: 100,
+		});
+		expect(out).toBeUndefined();
+	});
+
+	it("maxBytes: an over-cap 2xx body rejects with MaxBytesError", async () => {
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(jsonResponse({ big: "x".repeat(200) }));
+
+		await expect(
+			fetchx.json("https://api.example.com", { maxBytes: 10 }),
+		).rejects.toBeInstanceOf(MaxBytesError);
+	});
+
+	it("maxBytes: an over-cap error body still throws HttpError (status preserved)", async () => {
+		// Regression: an over-maxBytes error body must not mask the HttpError —
+		// the caller still needs the status; the body is best-effort (undefined).
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				jsonResponse(
+					{ message: "x".repeat(200) },
+					{ status: 500, statusText: "ISE" },
+				),
+			);
+
+		try {
+			await fetchx.json("https://api.example.com", { maxBytes: 10 });
+			expect.fail("expected to throw");
+		} catch (err) {
+			expect(err).toBeInstanceOf(HttpError);
+			expect((err as HttpError).status).toBe(500);
+			expect((err as HttpError).body).toBeUndefined();
+		}
+	});
 });
 
 describe("createClient", () => {
@@ -966,6 +1156,119 @@ describe("createClient", () => {
 		const api = createClient({ baseUrl: "https://api.example.com" });
 
 		await expect(api.json.get("/admin")).rejects.toBeInstanceOf(HttpError);
+	});
+
+	it("json.put and json.patch send their verb and serialize the body", async () => {
+		// Fresh response per call: the JSON helper reads the body, so a single
+		// shared Response would be "already read" on the second request.
+		globalThis.fetch = vi
+			.fn()
+			.mockImplementation(() => jsonResponse({ ok: true }));
+		const api = createClient({ baseUrl: "https://api.example.com" });
+
+		await api.json.put("/items/1", { a: 1 });
+		await api.json.patch("/items/1", { b: 2 });
+
+		const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
+		expect((calls[0][1] as RequestInit).method).toBe("PUT");
+		expect((calls[0][1] as RequestInit).body).toBe(
+			JSON.stringify({ a: 1 }),
+		);
+		expect((calls[1][1] as RequestInit).method).toBe("PATCH");
+		expect((calls[1][1] as RequestInit).body).toBe(
+			JSON.stringify({ b: 2 }),
+		);
+	});
+
+	describe("restrictToBaseOrigin", () => {
+		it("allows same-origin relative paths", async () => {
+			globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
+			const api = createClient({
+				baseUrl: "https://api.example.com/v1/",
+				restrictToBaseOrigin: true,
+			});
+
+			await api.get("/users");
+
+			expect(
+				(globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0],
+			).toBe("https://api.example.com/users");
+		});
+
+		it("throws when an absolute path escapes the base origin", async () => {
+			globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
+			const api = createClient({
+				baseUrl: "https://api.example.com",
+				restrictToBaseOrigin: true,
+			});
+
+			await expect(
+				api.get("https://evil.example.com/steal"),
+			).rejects.toThrow(/escapes baseUrl origin/);
+			expect(globalThis.fetch).not.toHaveBeenCalled();
+		});
+
+		it("throws when a protocol-relative path escapes the base origin", async () => {
+			globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
+			const api = createClient({
+				baseUrl: "https://api.example.com",
+				restrictToBaseOrigin: true,
+			});
+
+			await expect(api.get("//evil.example.com/x")).rejects.toThrow(
+				/escapes baseUrl origin/,
+			);
+			expect(globalThis.fetch).not.toHaveBeenCalled();
+		});
+
+		it("throws when a URL instance escapes the base origin", async () => {
+			globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
+			const api = createClient({
+				baseUrl: "https://api.example.com",
+				restrictToBaseOrigin: true,
+			});
+
+			await expect(
+				api.json.get(new URL("https://evil.example.com/x")),
+			).rejects.toThrow(/escapes baseUrl origin/);
+			expect(globalThis.fetch).not.toHaveBeenCalled();
+		});
+
+		it("allows a same-origin URL instance through unchanged", async () => {
+			globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
+			const api = createClient({
+				baseUrl: "https://api.example.com",
+				restrictToBaseOrigin: true,
+			});
+			const url = new URL("https://api.example.com/ok");
+
+			await api.get(url);
+
+			expect(
+				(globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0],
+			).toBe(url);
+		});
+
+		it("does not restrict when the option is off (default)", async () => {
+			globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
+			const api = createClient({ baseUrl: "https://api.example.com" });
+
+			await api.get("https://other.example.com/x");
+
+			expect(
+				(globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0],
+			).toBe("https://other.example.com/x");
+		});
+
+		it("fails closed: throws at construction without a baseUrl", async () => {
+			// The guard must not silently no-op when baseUrl is omitted or empty.
+			expect(() => createClient({ restrictToBaseOrigin: true })).toThrow(
+				/requires `baseUrl`/,
+			);
+			expect(() =>
+				createClient({ baseUrl: "", restrictToBaseOrigin: true }),
+			).toThrow(/requires `baseUrl`/);
+		});
 	});
 });
 

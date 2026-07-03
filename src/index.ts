@@ -69,26 +69,37 @@ export async function tryAsync<T>(promise: Promise<T>): Promise<Result<T>> {
 /** Works in browsers, Node, and restricted runtimes (Shopify Functions, older SSR). */
 const nowMs = (): number => globalThis.performance?.now?.() ?? Date.now();
 
+/** A combined abort signal plus a `dispose` that detaches any fallback listeners. */
+type CombinedSignal = { signal: AbortSignal; dispose: () => void };
+
 /**
  * Combine caller-provided signal(s) with the timeout signal so both can abort
  * the underlying fetch. Uses native `AbortSignal.any` when available
  * (Node 20.3+, modern browsers) and falls back to event-based merging.
+ *
+ * The returned `dispose` detaches any listeners the fallback attached; callers
+ * must invoke it once the request settles so they don't accumulate on
+ * long-lived caller signals reused across requests.
  */
-const combineSignals = (signals: (AbortSignal | undefined)[]): AbortSignal => {
+const combineSignals = (
+	signals: (AbortSignal | undefined)[],
+): CombinedSignal => {
+	const noop = () => {};
 	const real = signals.filter((s): s is AbortSignal => s != null);
-	if (real.length === 1) return real[0];
+	if (real.length === 1) return { signal: real[0], dispose: noop };
 	const Any = (
 		AbortSignal as unknown as {
 			any?: (s: AbortSignal[]) => AbortSignal;
 		}
 	).any;
-	if (typeof Any === "function") return Any(real);
+	if (typeof Any === "function") return { signal: Any(real), dispose: noop };
 
 	const controller = new AbortController();
-	// Track listeners so we can detach them when the combined signal aborts —
-	// prevents accumulation on long-lived caller signals reused across requests.
+	// Track listeners so we can detach them once the request settles (via
+	// `dispose`) or on abort — otherwise they accumulate on long-lived caller
+	// signals reused across requests.
 	const listeners: Array<{ signal: AbortSignal; handler: () => void }> = [];
-	const cleanup = () => {
+	const dispose = () => {
 		for (const { signal, handler } of listeners) {
 			signal.removeEventListener("abort", handler);
 		}
@@ -97,20 +108,18 @@ const combineSignals = (signals: (AbortSignal | undefined)[]): AbortSignal => {
 
 	for (const s of real) {
 		if (s.aborted) {
-			cleanup();
+			dispose();
 			controller.abort(s.reason);
-			return controller.signal;
+			return { signal: controller.signal, dispose };
 		}
 		const handler = () => {
-			cleanup();
+			dispose();
 			controller.abort(s.reason);
 		};
 		listeners.push({ signal: s, handler });
 		s.addEventListener("abort", handler, { once: true });
 	}
-	// Also clean up if the controller aborts for any other reason (e.g. timeout).
-	controller.signal.addEventListener("abort", cleanup, { once: true });
-	return controller.signal;
+	return { signal: controller.signal, dispose };
 };
 
 /**
@@ -157,18 +166,20 @@ async function fetchxImpl(
 			}, timeout)
 		: undefined;
 	const startTime = nowMs();
+	const combined = combineSignals([
+		callerSignal ?? undefined,
+		timeoutActive ? timeoutController.signal : undefined,
+	]);
 
 	let response: Response;
 	try {
 		response = await doFetch(url, {
 			...fetchOptions,
-			signal: combineSignals([
-				callerSignal ?? undefined,
-				timeoutActive ? timeoutController.signal : undefined,
-			]),
+			signal: combined.signal,
 		});
 	} finally {
 		if (timeoutId !== undefined) clearTimeout(timeoutId);
+		combined.dispose();
 	}
 
 	const durationMs = nowMs() - startTime;
@@ -220,6 +231,12 @@ export class HttpError extends Error {
 export type FetchJsonOptions = Omit<RequestOptions, "withDuration"> & {
 	/** Plain value to send as a JSON body. Stringified with `JSON.stringify`; sets `content-type: application/json` if unset. Mutually exclusive with `body`. */
 	json?: unknown;
+	/**
+	 * Cap the response body at this many bytes. Rejects early when `content-length`
+	 * exceeds it, and otherwise while streaming, guarding the JSON parse against
+	 * oversized or hostile responses. Omit for no cap.
+	 */
+	maxBytes?: number;
 };
 
 const JSON_MIME = "application/json";
@@ -233,9 +250,65 @@ const isJsonContentType = (contentType: string | null): boolean => {
 	return /\/([\w.-]+\+)?json$/.test(mediaType);
 };
 
-const parseResponseBody = async (response: Response): Promise<unknown> => {
+/**
+ * Thrown by the JSON helpers when a response body exceeds the `maxBytes` cap,
+ * either via its declared `content-length` or the streamed byte count.
+ */
+export class MaxBytesError extends Error {
+	readonly maxBytes: number;
+	constructor(maxBytes: number) {
+		super(`fetchx: response body exceeds maxBytes (${maxBytes})`);
+		this.name = "MaxBytesError";
+		this.maxBytes = maxBytes;
+	}
+}
+
+/**
+ * Read a response body as text, rejecting if it exceeds `maxBytes`. Checks the
+ * declared `content-length` first, then enforces the budget while streaming (so
+ * responses that omit or understate `content-length` are still capped). Falls
+ * back to `response.text()` when no stream is exposed (some runtimes/mocks).
+ */
+const readBodyText = async (
+	response: Response,
+	maxBytes?: number,
+): Promise<string> => {
+	if (maxBytes === undefined) return response.text();
+	const declared = Number(response.headers.get("content-length"));
+	if (Number.isFinite(declared) && declared > maxBytes)
+		throw new MaxBytesError(maxBytes);
+	const body = response.body;
+	if (!body) return response.text();
+	const reader = body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		total += value.byteLength;
+		if (total > maxBytes) {
+			// Best-effort, don't await: cancelling a cloned/tee'd body stream (the
+			// error-body path) never resolves in undici, which would hang the call.
+			reader.cancel().catch(() => {});
+			throw new MaxBytesError(maxBytes);
+		}
+		chunks.push(value);
+	}
+	const merged = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		merged.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return new TextDecoder().decode(merged);
+};
+
+const parseResponseBody = async (
+	response: Response,
+	maxBytes?: number,
+): Promise<unknown> => {
 	if (response.status === 204 || response.status === 205) return undefined;
-	const text = await response.text();
+	const text = await readBodyText(response, maxBytes);
 	if (!text) return undefined;
 	if (isJsonContentType(response.headers.get("content-type"))) {
 		return JSON.parse(text);
@@ -257,7 +330,7 @@ async function fetchxJsonImpl<T = unknown>(
 	url: string | URL | Request,
 	options: FetchJsonOptions = {},
 ): Promise<T> {
-	const { json, headers, body, ...rest } = options;
+	const { json, headers, body, maxBytes, ...rest } = options;
 	if (json !== undefined && body != null) {
 		throw new TypeError(
 			"fetchx.json: provide either `json` or `body`, not both",
@@ -279,15 +352,20 @@ async function fetchxJsonImpl<T = unknown>(
 	});
 	if (!response.ok) {
 		// Read the error body from a clone so `err.response` stays re-readable.
-		// Only swallow JSON parse failures (best-effort body); a genuine body-read
+		// Best-effort: swallow a JSON parse failure or an over-`maxBytes` body so
+		// the caller still gets an HttpError with the status; a genuine body-read
 		// failure (aborted/dropped stream) surfaces instead of being masked.
-		const errBody = await parseResponseBody(response.clone()).catch((e) => {
-			if (e instanceof SyntaxError) return undefined;
+		const errBody = await parseResponseBody(
+			response.clone(),
+			maxBytes,
+		).catch((e) => {
+			if (e instanceof SyntaxError || e instanceof MaxBytesError)
+				return undefined;
 			throw e;
 		});
 		throw new HttpError(response, errBody);
 	}
-	return (await parseResponseBody(response)) as T;
+	return (await parseResponseBody(response, maxBytes)) as T;
 }
 
 function fetchxJsonTryImpl<T = unknown>(
@@ -374,6 +452,13 @@ export type ClientDefaults = {
 	timeout?: number;
 	/** Default `fetch` implementation. Per-request `fetchImpl` overrides. */
 	fetchImpl?: typeof fetch;
+	/**
+	 * When true, throw if a request resolves to an origin other than `baseUrl`'s
+	 * (including absolute-URL, protocol-relative, or `URL`-instance paths).
+	 * Guards default headers (e.g. auth tokens) from riding to an unintended
+	 * host when a path may be untrusted. Requires `baseUrl`. Default false.
+	 */
+	restrictToBaseOrigin?: boolean;
 };
 
 type RequestOptionsNoMethodBody = Omit<RequestOptions, "method" | "body">;
@@ -434,13 +519,22 @@ export type Client = {
 	};
 };
 
+const originOf = (u: string | URL): string => new URL(u.toString()).origin;
+
 const resolveUrl = (
 	base: string | URL | undefined,
-	path: string | URL | Request,
-): string | URL | Request => {
+	path: string | URL,
+	restrictToBaseOrigin: boolean,
+): string | URL => {
 	if (!base) return path;
-	if (path instanceof URL || path instanceof Request) return path;
-	return new URL(path, base.toString()).toString();
+	const resolved =
+		path instanceof URL ? path : new URL(path, base.toString());
+	if (restrictToBaseOrigin && resolved.origin !== originOf(base)) {
+		throw new Error(
+			`fetchx: request to ${resolved.origin} escapes baseUrl origin ${originOf(base)}`,
+		);
+	}
+	return path instanceof URL ? path : resolved.toString();
 };
 
 const mergeHeaders = (
@@ -475,7 +569,15 @@ export function createClient(defaults: ClientDefaults = {}): Client {
 		headers: defaultHeaders,
 		timeout: defaultTimeout,
 		fetchImpl: defaultFetchImpl,
+		restrictToBaseOrigin = false,
 	} = defaults;
+
+	// Fail closed: the origin guard is meaningless without a base to compare against.
+	if (restrictToBaseOrigin && !baseUrl) {
+		throw new Error(
+			"fetchx: createClient requires `baseUrl` when `restrictToBaseOrigin` is true",
+		);
+	}
 
 	const applyDefaults = <
 		T extends {
@@ -492,21 +594,21 @@ export function createClient(defaults: ClientDefaults = {}): Client {
 		fetchImpl: options.fetchImpl ?? defaultFetchImpl,
 	});
 
-	const doFetchx = (
+	const doFetchx = async (
 		path: string | URL,
 		options: RequestOptions = {},
 	): Promise<Response> =>
 		fetchxImpl(
-			resolveUrl(baseUrl, path) as string | URL,
+			resolveUrl(baseUrl, path, restrictToBaseOrigin),
 			applyDefaults(options),
 		);
 
-	const doJson = <T>(
+	const doJson = async <T>(
 		path: string | URL,
 		options: FetchJsonOptions = {},
 	): Promise<T> =>
 		fetchxJsonImpl<T>(
-			resolveUrl(baseUrl, path) as string | URL,
+			resolveUrl(baseUrl, path, restrictToBaseOrigin),
 			applyDefaults(options),
 		);
 

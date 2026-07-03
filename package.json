@@ -33,6 +33,7 @@
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"coverage": "vitest run --coverage",
+		"typecheck": "tsc --noEmit",
 		"prepublishOnly": "pnpm run build",
 		"lint": "biome check .",
 		"format": "biome check --write ."
