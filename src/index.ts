@@ -14,7 +14,7 @@ export type RequestOptions = RequestInit & {
 };
 
 /**
- * Result of {@link fetchx} when `withDuration: true`.
+ * Result of {@link netzap} when `withDuration: true`.
  *
  * Only returned on **successful** fetches. If the underlying fetch rejects
  * (network error, timeout, caller abort), the promise rejects with that
@@ -28,12 +28,13 @@ export type RequestResult = Readonly<{
 }>;
 
 /**
- * Discriminated Result type returned by {@link tryAsync}, {@link fetchx.try},
- * and {@link fetchx.json.try}. Narrow on `ok` to access `data` or `error`.
+ * Discriminated Result type returned by {@link netzap.try} and
+ * {@link netzap.json.try} (and the client `.try` methods). Narrow on `ok` to
+ * access `data` or `error`.
  *
  * @example
  * ```ts
- * const res = await fetchx.try("/x");
+ * const res = await netzap.try("/x");
  * if (res.ok) res.data;   // Response
  * else        res.error;  // Error
  * ```
@@ -43,19 +44,12 @@ export type Result<T, E = Error> =
 	| { readonly ok: false; readonly error: E };
 
 /**
- * Wrap a promise: rejections become `{ ok: false, error }`, fulfillment becomes
- * `{ ok: true, data }`. Non-Error rejections (e.g. `throw "boom"`) are coerced
- * into `new Error(String(reason))` so `error` is always an `Error` instance.
- *
- * Useful for composing with anything that returns a promise — including the
- * methods on a `createClient(...)` client:
- *
- * ```ts
- * const res = await tryAsync(api.json.get<User>("/me"));
- * if (res.ok) console.log(res.data);
- * ```
+ * Internal: wrap a promise so rejections become `{ ok: false, error }` and
+ * fulfillment becomes `{ ok: true, data }`. Non-Error rejections (e.g.
+ * `throw "boom"`) are coerced into `new Error(String(reason))` so `error` is
+ * always an `Error` instance. Powers the `.try` variants.
  */
-export async function tryAsync<T>(promise: Promise<T>): Promise<Result<T>> {
+async function tryAsync<T>(promise: Promise<T>): Promise<Result<T>> {
 	try {
 		return { ok: true, data: await promise };
 	} catch (e) {
@@ -131,15 +125,15 @@ const combineSignals = (
  *
  * Pass `withDuration: true` to receive timing alongside the {@link Response}.
  */
-async function fetchxImpl(
+async function netzapImpl(
 	url: string | URL | Request,
 	options: RequestOptions & { withDuration: true },
 ): Promise<RequestResult>;
-async function fetchxImpl(
+async function netzapImpl(
 	url: string | URL | Request,
 	options?: RequestOptions,
 ): Promise<Response>;
-async function fetchxImpl(
+async function netzapImpl(
 	url: string | URL | Request,
 	options: RequestOptions = {},
 ): Promise<Response | RequestResult> {
@@ -160,7 +154,7 @@ async function fetchxImpl(
 				// Plain Error (portable across Node, browsers, edge runtimes, WASM).
 				// `DOMException` is not universally available; matching `err.name === "TimeoutError"`
 				// works on both Error and DOMException so callers can distinguish timeouts.
-				const err = new Error(`fetchx timeout after ${timeout}ms`);
+				const err = new Error(`netzap timeout after ${timeout}ms`);
 				err.name = "TimeoutError";
 				timeoutController.abort(err);
 			}, timeout)
@@ -188,23 +182,23 @@ async function fetchxImpl(
 		: response;
 }
 
-function fetchxTryImpl(
+function netzapTryImpl(
 	url: string | URL | Request,
 	options: RequestOptions & { withDuration: true },
 ): Promise<Result<RequestResult>>;
-function fetchxTryImpl(
+function netzapTryImpl(
 	url: string | URL | Request,
 	options?: RequestOptions,
 ): Promise<Result<Response>>;
-function fetchxTryImpl(
+function netzapTryImpl(
 	url: string | URL | Request,
 	options: RequestOptions = {},
 ): Promise<Result<Response | RequestResult>> {
-	return tryAsync(fetchxImpl(url, options));
+	return tryAsync(netzapImpl(url, options));
 }
 
 /**
- * Thrown by {@link fetchx.json} and {@link Client} json helpers when the response
+ * Thrown by {@link netzap.json} and {@link Client} json helpers when the response
  * status is not 2xx. Carries the parsed body (best-effort) and the original
  * {@link Response} for callers that need headers or to re-read the stream.
  */
@@ -257,7 +251,7 @@ const isJsonContentType = (contentType: string | null): boolean => {
 export class MaxBytesError extends Error {
 	readonly maxBytes: number;
 	constructor(maxBytes: number) {
-		super(`fetchx: response body exceeds maxBytes (${maxBytes})`);
+		super(`netzap: response body exceeds maxBytes (${maxBytes})`);
 		this.name = "MaxBytesError";
 		this.maxBytes = maxBytes;
 	}
@@ -324,16 +318,16 @@ const parseResponseBody = async (
  * - Resolves to the parsed JSON body typed as `T`. Empty `204`/`205` resolves to `undefined`.
  * - Rejects with {@link HttpError} on non-2xx, carrying the parsed body when available.
  *
- * Wraps {@link fetchx}, so `timeout`, `signal`, and `fetchImpl` work the same way.
+ * Wraps {@link netzap}, so `timeout`, `signal`, and `fetchImpl` work the same way.
  */
-async function fetchxJsonImpl<T = unknown>(
+async function netzapJsonImpl<T = unknown>(
 	url: string | URL | Request,
 	options: FetchJsonOptions = {},
 ): Promise<T> {
 	const { json, headers, body, maxBytes, ...rest } = options;
 	if (json !== undefined && body != null) {
 		throw new TypeError(
-			"fetchx.json: provide either `json` or `body`, not both",
+			"netzap.json: provide either `json` or `body`, not both",
 		);
 	}
 	const finalHeaders = new Headers(headers);
@@ -345,7 +339,7 @@ async function fetchxJsonImpl<T = unknown>(
 			finalHeaders.set("content-type", JSON_MIME);
 		}
 	}
-	const response = await fetchxImpl(url, {
+	const response = await netzapImpl(url, {
 		...rest,
 		headers: finalHeaders,
 		body: finalBody,
@@ -368,18 +362,18 @@ async function fetchxJsonImpl<T = unknown>(
 	return (await parseResponseBody(response, maxBytes)) as T;
 }
 
-function fetchxJsonTryImpl<T = unknown>(
+function netzapJsonTryImpl<T = unknown>(
 	url: string | URL | Request,
 	options: FetchJsonOptions = {},
 ): Promise<Result<T>> {
-	return tryAsync(fetchxJsonImpl<T>(url, options));
+	return tryAsync(netzapJsonImpl<T>(url, options));
 }
 
 /**
- * JSON sub-API attached at {@link fetchx.json}: callable with a `.try` method
+ * JSON sub-API attached at {@link netzap.json}: callable with a `.try` method
  * that returns a {@link Result} instead of throwing.
  */
-export interface FetchxJson {
+export interface NetzapJson {
 	<T = unknown>(
 		url: string | URL | Request,
 		options?: FetchJsonOptions,
@@ -392,11 +386,11 @@ export interface FetchxJson {
 }
 
 /**
- * Public type of the {@link fetchx} export: a callable `fetch` wrapper with a
+ * Public type of the {@link netzap} export: a callable `fetch` wrapper with a
  * `.json` helper attached. Use it to type values that should accept the
  * library's main entry point.
  */
-export interface Fetchx {
+export interface Netzap {
 	(
 		url: string | URL | Request,
 		options: RequestOptions & { withDuration: true },
@@ -420,9 +414,9 @@ export interface Fetchx {
 	 * `json` body, parses the response, and throws {@link HttpError} on non-2xx.
 	 * Resolves to `undefined` for empty (204/205) responses.
 	 *
-	 * Use `fetchx.json.try<T>(...)` to receive a {@link Result} instead.
+	 * Use `netzap.json.try<T>(...)` to receive a {@link Result} instead.
 	 */
-	json: FetchxJson;
+	json: NetzapJson;
 }
 
 /**
@@ -430,18 +424,18 @@ export interface Fetchx {
  *
  * - Caller-provided `signal` is preserved: either it **or** the timeout can abort the request.
  * - On timeout, the abort reason is an `Error` with `name === "TimeoutError"`.
- * - `fetchx.json<T>(url, opts?)` parses and types JSON responses.
- * - `fetchx.try(...)` and `fetchx.json.try<T>(...)` resolve to a {@link Result}
+ * - `netzap.json<T>(url, opts?)` parses and types JSON responses.
+ * - `netzap.try(...)` and `netzap.json.try<T>(...)` resolve to a {@link Result}
  *   instead of rejecting, so callers can branch on `res.ok` without try/catch.
  */
-const fetchxJson: FetchxJson = Object.assign(fetchxJsonImpl, {
-	try: fetchxJsonTryImpl,
-}) as FetchxJson;
+const netzapJson: NetzapJson = Object.assign(netzapJsonImpl, {
+	try: netzapJsonTryImpl,
+}) as NetzapJson;
 
-export const fetchx: Fetchx = Object.assign(fetchxImpl, {
-	try: fetchxTryImpl,
-	json: fetchxJson,
-}) as Fetchx;
+export const netzap: Netzap = Object.assign(netzapImpl, {
+	try: netzapTryImpl,
+	json: netzapJson,
+}) as Netzap;
 
 export type ClientDefaults = {
 	/** Prepended to relative paths via `new URL(path, baseUrl)`. */
@@ -468,7 +462,7 @@ type JsonOptionsNoMethodBody = Omit<
 >;
 
 export type Client = {
-	fetchx(path: string | URL, options?: RequestOptions): Promise<Response>;
+	netzap(path: string | URL, options?: RequestOptions): Promise<Response>;
 	get(
 		path: string | URL,
 		options?: RequestOptionsNoMethodBody,
@@ -516,6 +510,70 @@ export type Client = {
 			path: string | URL,
 			options?: JsonOptionsNoMethodBody,
 		): Promise<T>;
+		/**
+		 * Result-returning variants of the json methods: resolve to a
+		 * {@link Result} instead of rejecting, so callers can branch on
+		 * `res.ok` without a try/catch.
+		 */
+		try: {
+			get<T = unknown>(
+				path: string | URL,
+				options?: JsonOptionsNoMethodBody,
+			): Promise<Result<T>>;
+			post<T = unknown>(
+				path: string | URL,
+				body?: unknown,
+				options?: JsonOptionsNoMethodBody,
+			): Promise<Result<T>>;
+			put<T = unknown>(
+				path: string | URL,
+				body?: unknown,
+				options?: JsonOptionsNoMethodBody,
+			): Promise<Result<T>>;
+			patch<T = unknown>(
+				path: string | URL,
+				body?: unknown,
+				options?: JsonOptionsNoMethodBody,
+			): Promise<Result<T>>;
+			delete<T = unknown>(
+				path: string | URL,
+				options?: JsonOptionsNoMethodBody,
+			): Promise<Result<T>>;
+		};
+	};
+	/**
+	 * Result-returning variants of the plain (non-json) methods: resolve to a
+	 * {@link Result}`<Response>` instead of rejecting on network error, timeout,
+	 * or caller abort. Mirrors {@link netzap.try}.
+	 */
+	try: {
+		netzap(
+			path: string | URL,
+			options?: RequestOptions,
+		): Promise<Result<Response>>;
+		get(
+			path: string | URL,
+			options?: RequestOptionsNoMethodBody,
+		): Promise<Result<Response>>;
+		post(
+			path: string | URL,
+			body?: BodyInit | null,
+			options?: RequestOptionsNoMethodBody,
+		): Promise<Result<Response>>;
+		put(
+			path: string | URL,
+			body?: BodyInit | null,
+			options?: RequestOptionsNoMethodBody,
+		): Promise<Result<Response>>;
+		patch(
+			path: string | URL,
+			body?: BodyInit | null,
+			options?: RequestOptionsNoMethodBody,
+		): Promise<Result<Response>>;
+		delete(
+			path: string | URL,
+			options?: RequestOptionsNoMethodBody,
+		): Promise<Result<Response>>;
 	};
 };
 
@@ -531,7 +589,7 @@ const resolveUrl = (
 		path instanceof URL ? path : new URL(path, base.toString());
 	if (restrictToBaseOrigin && resolved.origin !== originOf(base)) {
 		throw new Error(
-			`fetchx: request to ${resolved.origin} escapes baseUrl origin ${originOf(base)}`,
+			`netzap: request to ${resolved.origin} escapes baseUrl origin ${originOf(base)}`,
 		);
 	}
 	return path instanceof URL ? path : resolved.toString();
@@ -558,12 +616,12 @@ const mergeHeaders = (
  *
  * @example
  * ```ts
- * const api = createClient({ baseUrl: "https://api.example.com", timeout: 5000 });
+ * const api = client({ baseUrl: "https://api.example.com", timeout: 5000 });
  * const user = await api.json.get<User>("/me");
  * await api.json.post("/orders", { sku: "abc", qty: 1 });
  * ```
  */
-export function createClient(defaults: ClientDefaults = {}): Client {
+export function client(defaults: ClientDefaults = {}): Client {
 	const {
 		baseUrl,
 		headers: defaultHeaders,
@@ -575,7 +633,7 @@ export function createClient(defaults: ClientDefaults = {}): Client {
 	// Fail closed: the origin guard is meaningless without a base to compare against.
 	if (restrictToBaseOrigin && !baseUrl) {
 		throw new Error(
-			"fetchx: createClient requires `baseUrl` when `restrictToBaseOrigin` is true",
+			"netzap: client requires `baseUrl` when `restrictToBaseOrigin` is true",
 		);
 	}
 
@@ -594,11 +652,11 @@ export function createClient(defaults: ClientDefaults = {}): Client {
 		fetchImpl: options.fetchImpl ?? defaultFetchImpl,
 	});
 
-	const doFetchx = async (
+	const doNetzap = async (
 		path: string | URL,
 		options: RequestOptions = {},
 	): Promise<Response> =>
-		fetchxImpl(
+		netzapImpl(
 			resolveUrl(baseUrl, path, restrictToBaseOrigin),
 			applyDefaults(options),
 		);
@@ -607,22 +665,22 @@ export function createClient(defaults: ClientDefaults = {}): Client {
 		path: string | URL,
 		options: FetchJsonOptions = {},
 	): Promise<T> =>
-		fetchxJsonImpl<T>(
+		netzapJsonImpl<T>(
 			resolveUrl(baseUrl, path, restrictToBaseOrigin),
 			applyDefaults(options),
 		);
 
 	return {
-		fetchx: doFetchx,
-		get: (path, options) => doFetchx(path, { ...options, method: "GET" }),
+		netzap: doNetzap,
+		get: (path, options) => doNetzap(path, { ...options, method: "GET" }),
 		post: (path, body, options) =>
-			doFetchx(path, { ...options, method: "POST", body }),
+			doNetzap(path, { ...options, method: "POST", body }),
 		put: (path, body, options) =>
-			doFetchx(path, { ...options, method: "PUT", body }),
+			doNetzap(path, { ...options, method: "PUT", body }),
 		patch: (path, body, options) =>
-			doFetchx(path, { ...options, method: "PATCH", body }),
+			doNetzap(path, { ...options, method: "PATCH", body }),
 		delete: (path, options) =>
-			doFetchx(path, { ...options, method: "DELETE" }),
+			doNetzap(path, { ...options, method: "DELETE" }),
 		json: {
 			get: (path, options) => doJson(path, { ...options, method: "GET" }),
 			post: (path, body, options) =>
@@ -633,6 +691,45 @@ export function createClient(defaults: ClientDefaults = {}): Client {
 				doJson(path, { ...options, method: "PATCH", json: body }),
 			delete: (path, options) =>
 				doJson(path, { ...options, method: "DELETE" }),
+			try: {
+				get: (path, options) =>
+					tryAsync(doJson(path, { ...options, method: "GET" })),
+				post: (path, body, options) =>
+					tryAsync(
+						doJson(path, {
+							...options,
+							method: "POST",
+							json: body,
+						}),
+					),
+				put: (path, body, options) =>
+					tryAsync(
+						doJson(path, { ...options, method: "PUT", json: body }),
+					),
+				patch: (path, body, options) =>
+					tryAsync(
+						doJson(path, {
+							...options,
+							method: "PATCH",
+							json: body,
+						}),
+					),
+				delete: (path, options) =>
+					tryAsync(doJson(path, { ...options, method: "DELETE" })),
+			},
+		},
+		try: {
+			netzap: (path, options) => tryAsync(doNetzap(path, options)),
+			get: (path, options) =>
+				tryAsync(doNetzap(path, { ...options, method: "GET" })),
+			post: (path, body, options) =>
+				tryAsync(doNetzap(path, { ...options, method: "POST", body })),
+			put: (path, body, options) =>
+				tryAsync(doNetzap(path, { ...options, method: "PUT", body })),
+			patch: (path, body, options) =>
+				tryAsync(doNetzap(path, { ...options, method: "PATCH", body })),
+			delete: (path, options) =>
+				tryAsync(doNetzap(path, { ...options, method: "DELETE" })),
 		},
 	};
 }

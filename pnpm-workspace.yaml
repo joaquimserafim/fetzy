@@ -3,5 +3,3 @@
 # pnpm treat fetchx as a workspace member of the home directory).
 packages:
   - .
-minimumReleaseAgeExclude:
-  - '@joaquimserafim/ts-try@1.1.0'

@@ -7,10 +7,6 @@ settings:
 importers:
 
   .:
-    dependencies:
-      '@joaquimserafim/ts-try':
-        specifier: ^1.1.0
-        version: 1.1.0
     devDependencies:
       '@biomejs/biome':
         specifier: 2.5.2
@@ -149,10 +145,6 @@ packages:
 
   '@emnapi/wasi-threads@1.2.2':
     resolution: {integrity: sha512-c95qOXkHdydNKhscBTebqEC1CVAZpyqOfVfBzQ1qgzyl3gfeldUjIggDbIZgDKsHLgnsM+igH7TJ/eAasaVuMA==}
-
-  '@joaquimserafim/ts-try@1.1.0':
-    resolution: {integrity: sha512-yeMCtW4QVS6Dc5XQcEGisUpCcJzwXEYXnkFJhB2m1FRFeGV6Pp9B9oYaSqkotOjF9rmzA5/ECLuunMuY1luqGA==}
-    engines: {node: '>=18'}
 
   '@jridgewell/gen-mapping@0.3.13':
     resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
@@ -970,8 +962,6 @@ snapshots:
     dependencies:
       tslib: 2.8.1
     optional: true
-
-  '@joaquimserafim/ts-try@1.1.0': {}
 
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:

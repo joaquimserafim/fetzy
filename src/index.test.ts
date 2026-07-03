@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-	createClient,
+	client,
 	DEFAULT_TIMEOUT_MS,
-	fetchx,
 	HttpError,
 	MaxBytesError,
-	tryAsync,
+	netzap,
 } from "./index";
 
 /** Minimal Response-like shape used by mocks; cast to Response at the boundary. */
@@ -30,7 +29,7 @@ const textResponse = (
 		headers: { "content-type": "text/plain", ...init.headers },
 	});
 
-describe("fetchx", () => {
+describe("netzap", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 	});
@@ -39,7 +38,7 @@ describe("fetchx", () => {
 		const mockResponse = { ok: true };
 		globalThis.fetch = vi.fn().mockResolvedValue(mockResponse);
 
-		const response = await fetchx("https://api.example.com");
+		const response = await netzap("https://api.example.com");
 
 		expect(fetch).toHaveBeenCalledWith("https://api.example.com", {
 			signal: expect.any(AbortSignal),
@@ -60,7 +59,7 @@ describe("fetchx", () => {
 			});
 
 		await expect(
-			fetchx("https://api.example.com", { timeout: 50 }),
+			netzap("https://api.example.com", { timeout: 50 }),
 		).rejects.toThrow("AbortError");
 	}, 1000);
 
@@ -74,7 +73,7 @@ describe("fetchx", () => {
 			body: JSON.stringify({ test: true }),
 		};
 
-		await fetchx("https://api.example.com", options);
+		await netzap("https://api.example.com", options);
 
 		expect(fetch).toHaveBeenCalledWith("https://api.example.com", {
 			...options,
@@ -87,7 +86,7 @@ describe("fetchx", () => {
 		const customFetch = vi.fn().mockResolvedValue(mockResponse);
 		globalThis.fetch = vi.fn();
 
-		const response = await fetchx("https://api.example.com", {
+		const response = await netzap("https://api.example.com", {
 			fetchImpl: customFetch,
 		});
 
@@ -100,7 +99,7 @@ describe("fetchx", () => {
 		const mockResponse = { ok: true } as Response;
 		globalThis.fetch = vi.fn().mockResolvedValue(mockResponse);
 
-		const out = await fetchx("https://api.example.com", {
+		const out = await netzap("https://api.example.com", {
 			withDuration: true,
 		});
 
@@ -127,7 +126,7 @@ describe("fetchx", () => {
 			});
 
 		try {
-			await fetchx("https://api.example.com", { timeout: 20 });
+			await netzap("https://api.example.com", { timeout: 20 });
 			expect.fail("expected to throw");
 		} catch (err) {
 			expect(err).toBeInstanceOf(Error);
@@ -151,7 +150,7 @@ describe("fetchx", () => {
 		const controller = new AbortController();
 		const callerReason = new Error("user cancelled");
 
-		const pending = fetchx("https://api.example.com", {
+		const pending = netzap("https://api.example.com", {
 			signal: controller.signal,
 			timeout: 5000,
 		});
@@ -166,7 +165,7 @@ describe("fetchx", () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(mockResponse);
 
 		const controller = new AbortController();
-		await fetchx("https://api.example.com", {
+		await netzap("https://api.example.com", {
 			signal: controller.signal,
 		});
 
@@ -183,7 +182,7 @@ describe("fetchx", () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(mockResponse);
 		const controller = new AbortController();
 
-		await fetchx("https://api.example.com", {
+		await netzap("https://api.example.com", {
 			signal: controller.signal,
 			timeout: 60_000,
 		});
@@ -221,7 +220,7 @@ describe("fetchx", () => {
 			const controller = new AbortController();
 			const reason = new Error("fallback cancel");
 
-			const pending = fetchx("https://api.example.com", {
+			const pending = netzap("https://api.example.com", {
 				signal: controller.signal,
 				timeout: 5000,
 			});
@@ -244,7 +243,7 @@ describe("fetchx", () => {
 
 			const controller = new AbortController();
 			try {
-				await fetchx("https://api.example.com", {
+				await netzap("https://api.example.com", {
 					signal: controller.signal,
 					timeout: 20,
 				});
@@ -273,7 +272,7 @@ describe("fetchx", () => {
 			controller.abort(reason);
 
 			await expect(
-				fetchx("https://api.example.com", {
+				netzap("https://api.example.com", {
 					signal: controller.signal,
 					timeout: 5000,
 				}),
@@ -290,7 +289,7 @@ describe("fetchx", () => {
 				"removeEventListener",
 			);
 
-			await fetchx("https://api.example.com", {
+			await netzap("https://api.example.com", {
 				signal: controller.signal,
 				timeout: 5000,
 			});
@@ -310,7 +309,7 @@ describe("fetchx", () => {
 		const mockResponse = { ok: true };
 		globalThis.fetch = vi.fn().mockResolvedValue(mockResponse);
 
-		await fetchx("https://api.example.com");
+		await netzap("https://api.example.com");
 
 		const calledWith = (globalThis.fetch as ReturnType<typeof vi.fn>).mock
 			.calls[0][1] as RequestInit;
@@ -325,7 +324,7 @@ describe("fetchx", () => {
 				.mockRejectedValue(new Error("network down"));
 
 			await expect(
-				fetchx("https://api.example.com", { withDuration: true }),
+				netzap("https://api.example.com", { withDuration: true }),
 			).rejects.toThrow("network down");
 		});
 
@@ -334,7 +333,7 @@ describe("fetchx", () => {
 				.fn()
 				.mockRejectedValue(new Error("network down"));
 			const settled = await Promise.allSettled([
-				fetchx("https://api.example.com", { withDuration: true }),
+				netzap("https://api.example.com", { withDuration: true }),
 			]);
 			expect(settled[0]?.status).toBe("rejected");
 			if (settled[0]?.status === "rejected") {
@@ -357,7 +356,7 @@ describe("fetchx", () => {
 				});
 
 			await expect(
-				fetchx("https://api.example.com", {
+				netzap("https://api.example.com", {
 					withDuration: true,
 					timeout: 25,
 				}),
@@ -378,7 +377,7 @@ describe("fetchx", () => {
 
 			const controller = new AbortController();
 			const reason = new Error("user dismissed");
-			const pending = fetchx("https://api.example.com", {
+			const pending = netzap("https://api.example.com", {
 				withDuration: true,
 				signal: controller.signal,
 				timeout: 5000,
@@ -394,7 +393,7 @@ describe("fetchx", () => {
 		const customFetch = vi.fn().mockResolvedValue(mockResponse);
 		globalThis.fetch = vi.fn();
 
-		await fetchx("https://api.example.com", {
+		await netzap("https://api.example.com", {
 			method: "POST",
 			withDuration: true,
 			timeout: 8888,
@@ -413,7 +412,7 @@ describe("fetchx", () => {
 		it("schedules internal timeout at DEFAULT_TIMEOUT_MS when omitted", async () => {
 			const spy = vi.spyOn(globalThis, "setTimeout");
 			globalThis.fetch = vi.fn().mockResolvedValue({ ok: true });
-			await fetchx("https://api.example.com");
+			await netzap("https://api.example.com");
 			expect(
 				spy.mock.calls.some((args) => args[1] === DEFAULT_TIMEOUT_MS),
 			).toBe(true);
@@ -425,7 +424,7 @@ describe("fetchx", () => {
 			try {
 				globalThis.fetch = vi.fn().mockResolvedValue({ ok: true });
 				await expect(
-					fetchx("https://api.example.com", {
+					netzap("https://api.example.com", {
 						withDuration: true,
 					}),
 				).resolves.toMatchObject({
@@ -443,7 +442,7 @@ describe("fetchx", () => {
 			const spy = vi.spyOn(globalThis, "setTimeout");
 			globalThis.fetch = vi.fn().mockResolvedValue({ ok: true });
 
-			const res = await fetchx("https://api.example.com", { timeout: 0 });
+			const res = await netzap("https://api.example.com", { timeout: 0 });
 
 			expect(res).toEqual({ ok: true });
 			// No 0 ms abort timer was armed, and the signal is not aborted.
@@ -463,9 +462,9 @@ describe("fetchx", () => {
 			const spy = vi.spyOn(globalThis, "setTimeout");
 			globalThis.fetch = vi.fn().mockResolvedValue({ ok: true });
 
-			await fetchx("https://api.example.com", { timeout });
+			await netzap("https://api.example.com", { timeout });
 
-			// The only timer fetchx arms is the timeout; disabled, it must
+			// The only timer netzap arms is the timeout; disabled, it must
 			// not schedule one for this delay value.
 			expect(spy.mock.calls.some((a) => Object.is(a[1], timeout))).toBe(
 				false,
@@ -487,7 +486,7 @@ describe("fetchx", () => {
 
 			const controller = new AbortController();
 			const reason = new Error("user cancelled");
-			const pending = fetchx("https://api.example.com", {
+			const pending = netzap("https://api.example.com", {
 				timeout: 0,
 				signal: controller.signal,
 			});
@@ -522,7 +521,7 @@ describe("HttpError", () => {
 	});
 });
 
-describe("fetchx.json", () => {
+describe("netzap.json", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 	});
@@ -532,7 +531,7 @@ describe("fetchx.json", () => {
 			.fn()
 			.mockResolvedValue(jsonResponse({ id: 1, name: "ada" }));
 
-		const out = await fetchx.json<{ id: number; name: string }>(
+		const out = await netzap.json<{ id: number; name: string }>(
 			"https://api.example.com/users/1",
 		);
 
@@ -544,7 +543,7 @@ describe("fetchx.json", () => {
 			.fn()
 			.mockResolvedValue(new Response(null, { status: 204 }));
 
-		const out = await fetchx.json("https://api.example.com/x");
+		const out = await netzap.json("https://api.example.com/x");
 		expect(out).toBeUndefined();
 	});
 
@@ -556,7 +555,7 @@ describe("fetchx.json", () => {
 			}),
 		);
 
-		const out = await fetchx.json("https://api.example.com/x");
+		const out = await netzap.json("https://api.example.com/x");
 		expect(out).toBeUndefined();
 	});
 
@@ -565,7 +564,7 @@ describe("fetchx.json", () => {
 			.fn()
 			.mockResolvedValue(textResponse("hello there"));
 
-		const out = await fetchx.json<string>("https://api.example.com/greet");
+		const out = await netzap.json<string>("https://api.example.com/greet");
 		expect(out).toBe("hello there");
 	});
 
@@ -579,14 +578,14 @@ describe("fetchx.json", () => {
 		} as unknown as Response;
 		globalThis.fetch = vi.fn().mockResolvedValue(fake);
 
-		const out = await fetchx.json<string>("https://api.example.com");
+		const out = await netzap.json<string>("https://api.example.com");
 		expect(out).toBe("plain body");
 	});
 
 	it("sets Accept: application/json by default", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
 
-		await fetchx.json("https://api.example.com");
+		await netzap.json("https://api.example.com");
 
 		const opts = (globalThis.fetch as ReturnType<typeof vi.fn>).mock
 			.calls[0][1] as RequestInit;
@@ -597,7 +596,7 @@ describe("fetchx.json", () => {
 	it("preserves caller-provided Accept header", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
 
-		await fetchx.json("https://api.example.com", {
+		await netzap.json("https://api.example.com", {
 			headers: { accept: "application/vnd.api+json" },
 		});
 
@@ -612,7 +611,7 @@ describe("fetchx.json", () => {
 			.fn()
 			.mockResolvedValue(jsonResponse({ ok: true }));
 
-		await fetchx.json("https://api.example.com", {
+		await netzap.json("https://api.example.com", {
 			method: "POST",
 			json: { name: "ada", age: 36 },
 		});
@@ -629,7 +628,7 @@ describe("fetchx.json", () => {
 			.fn()
 			.mockResolvedValue(jsonResponse({ ok: true }));
 
-		await fetchx.json("https://api.example.com", {
+		await netzap.json("https://api.example.com", {
 			method: "POST",
 			json: { x: 1 },
 			headers: { "content-type": "application/vnd.api+json" },
@@ -652,7 +651,7 @@ describe("fetchx.json", () => {
 			);
 
 		try {
-			await fetchx.json("https://api.example.com/missing");
+			await netzap.json("https://api.example.com/missing");
 			expect.fail("expected to throw");
 		} catch (err) {
 			expect(err).toBeInstanceOf(HttpError);
@@ -671,7 +670,7 @@ describe("fetchx.json", () => {
 			);
 
 		try {
-			await fetchx.json("https://api.example.com/oops");
+			await netzap.json("https://api.example.com/oops");
 			expect.fail("expected to throw");
 		} catch (err) {
 			const httpErr = err as HttpError;
@@ -690,7 +689,7 @@ describe("fetchx.json", () => {
 		);
 
 		try {
-			await fetchx.json("https://api.example.com/bad");
+			await netzap.json("https://api.example.com/bad");
 			expect.fail("expected to throw");
 		} catch (err) {
 			const httpErr = err as HttpError;
@@ -712,7 +711,7 @@ describe("fetchx.json", () => {
 			});
 
 		await expect(
-			fetchx.json("https://api.example.com", { timeout: 20 }),
+			netzap.json("https://api.example.com", { timeout: 20 }),
 		).rejects.toMatchObject({ name: "TimeoutError" });
 	});
 
@@ -724,7 +723,7 @@ describe("fetchx.json", () => {
 			}),
 		);
 
-		const out = await fetchx.json("https://api.example.com");
+		const out = await netzap.json("https://api.example.com");
 		expect(out).toEqual({ ok: true });
 	});
 
@@ -736,7 +735,7 @@ describe("fetchx.json", () => {
 			}),
 		);
 
-		const out = await fetchx.json("https://api.example.com");
+		const out = await netzap.json("https://api.example.com");
 		expect(out).toEqual({ "@id": 1 });
 	});
 
@@ -749,7 +748,7 @@ describe("fetchx.json", () => {
 			}),
 		);
 
-		const out = await fetchx.json<string>("https://api.example.com");
+		const out = await netzap.json<string>("https://api.example.com");
 		expect(out).toBe("<html>not json</html>");
 	});
 
@@ -761,7 +760,7 @@ describe("fetchx.json", () => {
 			}),
 		);
 
-		const out = await fetchx.json<string>("https://api.example.com");
+		const out = await netzap.json<string>("https://api.example.com");
 		expect(out).toBe('{"a":1}\n{"a":2}');
 	});
 
@@ -776,7 +775,7 @@ describe("fetchx.json", () => {
 			);
 
 		try {
-			await fetchx.json("https://api.example.com/x");
+			await netzap.json("https://api.example.com/x");
 			expect.fail("expected to throw");
 		} catch (err) {
 			const httpErr = err as HttpError;
@@ -790,7 +789,7 @@ describe("fetchx.json", () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
 
 		await expect(
-			fetchx.json("https://api.example.com", {
+			netzap.json("https://api.example.com", {
 				method: "POST",
 				json: { a: 1 },
 				body: "raw",
@@ -813,7 +812,7 @@ describe("fetchx.json", () => {
 		} as unknown as Response;
 		globalThis.fetch = vi.fn().mockResolvedValue(badResponse);
 
-		await expect(fetchx.json("https://api.example.com/x")).rejects.toBe(
+		await expect(netzap.json("https://api.example.com/x")).rejects.toBe(
 			readErr,
 		);
 	});
@@ -826,7 +825,7 @@ describe("fetchx.json", () => {
 			}),
 		);
 
-		const out = await fetchx.json("https://api.example.com", {
+		const out = await netzap.json("https://api.example.com", {
 			maxBytes: 1000,
 		});
 		expect(out).toEqual({ ok: true });
@@ -853,7 +852,7 @@ describe("fetchx.json", () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(fake);
 
 		await expect(
-			fetchx.json("https://api.example.com", { maxBytes: 100 }),
+			netzap.json("https://api.example.com", { maxBytes: 100 }),
 		).rejects.toBeInstanceOf(MaxBytesError);
 	});
 
@@ -873,7 +872,7 @@ describe("fetchx.json", () => {
 		);
 
 		await expect(
-			fetchx.json("https://api.example.com", { maxBytes: 100 }),
+			netzap.json("https://api.example.com", { maxBytes: 100 }),
 		).rejects.toThrow(/exceeds maxBytes/);
 	});
 
@@ -899,7 +898,7 @@ describe("fetchx.json", () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(fake);
 
 		await expect(
-			fetchx.json("https://api.example.com", { maxBytes: 10 }),
+			netzap.json("https://api.example.com", { maxBytes: 10 }),
 		).rejects.toBeInstanceOf(MaxBytesError);
 		expect(reader.cancel).toHaveBeenCalled();
 	});
@@ -914,7 +913,7 @@ describe("fetchx.json", () => {
 		} as unknown as Response;
 		globalThis.fetch = vi.fn().mockResolvedValue(fake);
 
-		const out = await fetchx.json("https://api.example.com", {
+		const out = await netzap.json("https://api.example.com", {
 			maxBytes: 1000,
 		});
 		expect(out).toEqual({ ok: true });
@@ -933,7 +932,7 @@ describe("fetchx.json", () => {
 			}),
 		);
 
-		const out = await fetchx.json("https://api.example.com", {
+		const out = await netzap.json("https://api.example.com", {
 			maxBytes: 100,
 		});
 		expect(out).toBeUndefined();
@@ -945,7 +944,7 @@ describe("fetchx.json", () => {
 			.mockResolvedValue(jsonResponse({ big: "x".repeat(200) }));
 
 		await expect(
-			fetchx.json("https://api.example.com", { maxBytes: 10 }),
+			netzap.json("https://api.example.com", { maxBytes: 10 }),
 		).rejects.toBeInstanceOf(MaxBytesError);
 	});
 
@@ -962,7 +961,7 @@ describe("fetchx.json", () => {
 			);
 
 		try {
-			await fetchx.json("https://api.example.com", { maxBytes: 10 });
+			await netzap.json("https://api.example.com", { maxBytes: 10 });
 			expect.fail("expected to throw");
 		} catch (err) {
 			expect(err).toBeInstanceOf(HttpError);
@@ -972,14 +971,14 @@ describe("fetchx.json", () => {
 	});
 });
 
-describe("createClient", () => {
+describe("client", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 	});
 
 	it("prepends baseUrl for relative paths", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
-		const api = createClient({ baseUrl: "https://api.example.com/v1/" });
+		const api = client({ baseUrl: "https://api.example.com/v1/" });
 
 		await api.get("/users");
 
@@ -990,7 +989,7 @@ describe("createClient", () => {
 
 	it("respects baseUrl trailing slash for relative path resolution", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
-		const api = createClient({ baseUrl: "https://api.example.com/v1/" });
+		const api = client({ baseUrl: "https://api.example.com/v1/" });
 
 		await api.get("users");
 
@@ -1001,7 +1000,7 @@ describe("createClient", () => {
 
 	it("passes URL instances through unchanged", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
-		const api = createClient({ baseUrl: "https://api.example.com" });
+		const api = client({ baseUrl: "https://api.example.com" });
 		const url = new URL("https://other.example.com/abs");
 
 		await api.get(url);
@@ -1013,7 +1012,7 @@ describe("createClient", () => {
 
 	it("works without baseUrl (passes absolute URLs through)", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
-		const api = createClient();
+		const api = client();
 
 		await api.get("https://api.example.com/x");
 
@@ -1024,7 +1023,7 @@ describe("createClient", () => {
 
 	it("merges default headers with per-request headers (per-request wins)", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
-		const api = createClient({
+		const api = client({
 			baseUrl: "https://api.example.com",
 			headers: {
 				authorization: "Bearer default",
@@ -1046,7 +1045,7 @@ describe("createClient", () => {
 	it("uses default timeout, overridable per-request", async () => {
 		const spy = vi.spyOn(globalThis, "setTimeout");
 		globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
-		const api = createClient({
+		const api = client({
 			baseUrl: "https://api.example.com",
 			timeout: 1234,
 		});
@@ -1064,7 +1063,7 @@ describe("createClient", () => {
 		const defaultFetch = vi.fn().mockResolvedValue(jsonResponse({}));
 		const overrideFetch = vi.fn().mockResolvedValue(jsonResponse({}));
 		globalThis.fetch = vi.fn();
-		const api = createClient({
+		const api = client({
 			baseUrl: "https://api.example.com",
 			fetchImpl: defaultFetch,
 		});
@@ -1079,7 +1078,7 @@ describe("createClient", () => {
 
 	it("sets HTTP method for each verb", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
-		const api = createClient({ baseUrl: "https://api.example.com" });
+		const api = client({ baseUrl: "https://api.example.com" });
 
 		await api.get("/a");
 		await api.post("/a", "body");
@@ -1095,7 +1094,7 @@ describe("createClient", () => {
 
 	it("passes body verbatim for post/put/patch", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
-		const api = createClient({ baseUrl: "https://api.example.com" });
+		const api = client({ baseUrl: "https://api.example.com" });
 
 		await api.post("/x", "raw-body");
 
@@ -1108,7 +1107,7 @@ describe("createClient", () => {
 		globalThis.fetch = vi
 			.fn()
 			.mockResolvedValue(jsonResponse({ id: 7, name: "grace" }));
-		const api = createClient({ baseUrl: "https://api.example.com" });
+		const api = client({ baseUrl: "https://api.example.com" });
 
 		const user = await api.json.get<{ id: number; name: string }>("/me");
 		expect(user).toEqual({ id: 7, name: "grace" });
@@ -1118,7 +1117,7 @@ describe("createClient", () => {
 		globalThis.fetch = vi
 			.fn()
 			.mockResolvedValue(jsonResponse({ ok: true }));
-		const api = createClient({ baseUrl: "https://api.example.com" });
+		const api = client({ baseUrl: "https://api.example.com" });
 
 		await api.json.post("/orders", { sku: "abc", qty: 1 });
 
@@ -1134,7 +1133,7 @@ describe("createClient", () => {
 		globalThis.fetch = vi
 			.fn()
 			.mockResolvedValue(new Response(null, { status: 204 }));
-		const api = createClient({ baseUrl: "https://api.example.com" });
+		const api = client({ baseUrl: "https://api.example.com" });
 
 		const out = await api.json.delete("/items/1");
 
@@ -1153,7 +1152,7 @@ describe("createClient", () => {
 					{ status: 403, statusText: "Forbidden" },
 				),
 			);
-		const api = createClient({ baseUrl: "https://api.example.com" });
+		const api = client({ baseUrl: "https://api.example.com" });
 
 		await expect(api.json.get("/admin")).rejects.toBeInstanceOf(HttpError);
 	});
@@ -1164,7 +1163,7 @@ describe("createClient", () => {
 		globalThis.fetch = vi
 			.fn()
 			.mockImplementation(() => jsonResponse({ ok: true }));
-		const api = createClient({ baseUrl: "https://api.example.com" });
+		const api = client({ baseUrl: "https://api.example.com" });
 
 		await api.json.put("/items/1", { a: 1 });
 		await api.json.patch("/items/1", { b: 2 });
@@ -1183,7 +1182,7 @@ describe("createClient", () => {
 	describe("restrictToBaseOrigin", () => {
 		it("allows same-origin relative paths", async () => {
 			globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
-			const api = createClient({
+			const api = client({
 				baseUrl: "https://api.example.com/v1/",
 				restrictToBaseOrigin: true,
 			});
@@ -1197,7 +1196,7 @@ describe("createClient", () => {
 
 		it("throws when an absolute path escapes the base origin", async () => {
 			globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
-			const api = createClient({
+			const api = client({
 				baseUrl: "https://api.example.com",
 				restrictToBaseOrigin: true,
 			});
@@ -1210,7 +1209,7 @@ describe("createClient", () => {
 
 		it("throws when a protocol-relative path escapes the base origin", async () => {
 			globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
-			const api = createClient({
+			const api = client({
 				baseUrl: "https://api.example.com",
 				restrictToBaseOrigin: true,
 			});
@@ -1223,7 +1222,7 @@ describe("createClient", () => {
 
 		it("throws when a URL instance escapes the base origin", async () => {
 			globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
-			const api = createClient({
+			const api = client({
 				baseUrl: "https://api.example.com",
 				restrictToBaseOrigin: true,
 			});
@@ -1236,7 +1235,7 @@ describe("createClient", () => {
 
 		it("allows a same-origin URL instance through unchanged", async () => {
 			globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
-			const api = createClient({
+			const api = client({
 				baseUrl: "https://api.example.com",
 				restrictToBaseOrigin: true,
 			});
@@ -1251,7 +1250,7 @@ describe("createClient", () => {
 
 		it("does not restrict when the option is off (default)", async () => {
 			globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({}));
-			const api = createClient({ baseUrl: "https://api.example.com" });
+			const api = client({ baseUrl: "https://api.example.com" });
 
 			await api.get("https://other.example.com/x");
 
@@ -1262,37 +1261,136 @@ describe("createClient", () => {
 
 		it("fails closed: throws at construction without a baseUrl", async () => {
 			// The guard must not silently no-op when baseUrl is omitted or empty.
-			expect(() => createClient({ restrictToBaseOrigin: true })).toThrow(
+			expect(() => client({ restrictToBaseOrigin: true })).toThrow(
 				/requires `baseUrl`/,
 			);
 			expect(() =>
-				createClient({ baseUrl: "", restrictToBaseOrigin: true }),
+				client({ baseUrl: "", restrictToBaseOrigin: true }),
 			).toThrow(/requires `baseUrl`/);
+		});
+	});
+
+	describe("json.try", () => {
+		it("returns a Result on success (no tryAsync needed)", async () => {
+			globalThis.fetch = vi
+				.fn()
+				.mockResolvedValue(jsonResponse({ id: 7, name: "grace" }));
+			const api = client({ baseUrl: "https://api.example.com" });
+
+			const res = await api.json.try.get<{ id: number; name: string }>(
+				"/me",
+			);
+
+			expect(res.ok).toBe(true);
+			if (res.ok) expect(res.data).toEqual({ id: 7, name: "grace" });
+		});
+
+		it("returns { ok: false, error: HttpError } on non-2xx", async () => {
+			globalThis.fetch = vi
+				.fn()
+				.mockResolvedValue(
+					jsonResponse(
+						{ message: "forbidden" },
+						{ status: 403, statusText: "Forbidden" },
+					),
+				);
+			const api = client({ baseUrl: "https://api.example.com" });
+
+			const res = await api.json.try.get("/admin");
+
+			expect(res.ok).toBe(false);
+			if (!res.ok) {
+				expect(res.error).toBeInstanceOf(HttpError);
+				expect((res.error as HttpError).status).toBe(403);
+			}
+		});
+
+		it("covers post/put/patch/delete and serializes the body", async () => {
+			globalThis.fetch = vi
+				.fn()
+				.mockImplementation(() => jsonResponse({ ok: true }));
+			const api = client({ baseUrl: "https://api.example.com" });
+
+			await api.json.try.post("/x", { a: 1 });
+			await api.json.try.put("/x", { b: 2 });
+			await api.json.try.patch("/x", { c: 3 });
+			await api.json.try.delete("/x");
+
+			const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock
+				.calls;
+			expect(calls.map((c) => (c[1] as RequestInit).method)).toEqual([
+				"POST",
+				"PUT",
+				"PATCH",
+				"DELETE",
+			]);
+			expect((calls[0][1] as RequestInit).body).toBe(
+				JSON.stringify({ a: 1 }),
+			);
+		});
+	});
+
+	describe("try (plain responses)", () => {
+		it("returns { ok: true, data: Response } on success", async () => {
+			const mockResponse = { ok: true } as Response;
+			globalThis.fetch = vi.fn().mockResolvedValue(mockResponse);
+			const api = client({ baseUrl: "https://api.example.com" });
+
+			const res = await api.try.get("/health");
+
+			expect(res.ok).toBe(true);
+			if (res.ok) expect(res.data).toBe(mockResponse);
+		});
+
+		it("returns { ok: false, error } on network error", async () => {
+			const boom = new Error("network down");
+			globalThis.fetch = vi.fn().mockRejectedValue(boom);
+			const api = client({ baseUrl: "https://api.example.com" });
+
+			const res = await api.try.get("/health");
+
+			expect(res.ok).toBe(false);
+			if (!res.ok) expect(res.error).toBe(boom);
+		});
+
+		it("covers netzap/post/put/patch/delete verbs", async () => {
+			globalThis.fetch = vi
+				.fn()
+				.mockResolvedValue({ ok: true } as Response);
+			const api = client({ baseUrl: "https://api.example.com" });
+
+			await api.try.netzap("/a");
+			await api.try.post("/a", "b");
+			await api.try.put("/a", "b");
+			await api.try.patch("/a", "b");
+			await api.try.delete("/a");
+
+			const methods = (
+				globalThis.fetch as ReturnType<typeof vi.fn>
+			).mock.calls.map((c) => (c[1] as RequestInit).method);
+			expect(methods).toEqual([
+				undefined,
+				"POST",
+				"PUT",
+				"PATCH",
+				"DELETE",
+			]);
 		});
 	});
 });
 
-describe("tryAsync", () => {
-	it("wraps a fulfilled promise into { ok: true, data }", async () => {
-		const res = await tryAsync(Promise.resolve(42));
-		expect(res).toEqual({ ok: true, data: 42 });
-		if (res.ok) {
-			// Type narrowing: data must be accessible, error must not.
-			expect(res.data).toBe(42);
-		}
+describe("Result error normalization", () => {
+	// The internal normalizer (behind every `.try`) guarantees `error` is always
+	// an `Error`. Exercised here through the public `netzap.try` surface.
+	beforeEach(() => {
+		vi.clearAllMocks();
 	});
 
-	it("wraps a rejected promise (with Error) into { ok: false, error }", async () => {
-		const boom = new Error("boom");
-		const res = await tryAsync(Promise.reject(boom));
-		expect(res.ok).toBe(false);
-		if (!res.ok) {
-			expect(res.error).toBe(boom);
-		}
-	});
+	it("coerces a non-Error rejection into an Error", async () => {
+		globalThis.fetch = vi.fn().mockRejectedValue("plain string");
 
-	it("coerces non-Error rejections to Error", async () => {
-		const res = await tryAsync(Promise.reject("plain string"));
+		const res = await netzap.try("https://api.example.com");
+
 		expect(res.ok).toBe(false);
 		if (!res.ok) {
 			expect(res.error).toBeInstanceOf(Error);
@@ -1300,16 +1398,17 @@ describe("tryAsync", () => {
 		}
 	});
 
-	it("coerces undefined rejection to Error", async () => {
-		const res = await tryAsync(Promise.reject(undefined));
+	it("coerces an undefined rejection into an Error", async () => {
+		globalThis.fetch = vi.fn().mockRejectedValue(undefined);
+
+		const res = await netzap.try("https://api.example.com");
+
 		expect(res.ok).toBe(false);
-		if (!res.ok) {
-			expect(res.error).toBeInstanceOf(Error);
-		}
+		if (!res.ok) expect(res.error).toBeInstanceOf(Error);
 	});
 });
 
-describe("fetchx.try", () => {
+describe("netzap.try", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 	});
@@ -1318,7 +1417,7 @@ describe("fetchx.try", () => {
 		const mockResponse = { ok: true } as Response;
 		globalThis.fetch = vi.fn().mockResolvedValue(mockResponse);
 
-		const res = await fetchx.try("https://api.example.com");
+		const res = await netzap.try("https://api.example.com");
 
 		expect(res.ok).toBe(true);
 		if (res.ok) expect(res.data).toBe(mockResponse);
@@ -1328,7 +1427,7 @@ describe("fetchx.try", () => {
 		const boom = new Error("network down");
 		globalThis.fetch = vi.fn().mockRejectedValue(boom);
 
-		const res = await fetchx.try("https://api.example.com");
+		const res = await netzap.try("https://api.example.com");
 
 		expect(res.ok).toBe(false);
 		if (!res.ok) expect(res.error).toBe(boom);
@@ -1346,7 +1445,7 @@ describe("fetchx.try", () => {
 				});
 			});
 
-		const res = await fetchx.try("https://api.example.com", {
+		const res = await netzap.try("https://api.example.com", {
 			timeout: 20,
 		});
 
@@ -1361,7 +1460,7 @@ describe("fetchx.try", () => {
 		const mockResponse = { ok: true } as Response;
 		globalThis.fetch = vi.fn().mockResolvedValue(mockResponse);
 
-		const res = await fetchx.try("https://api.example.com", {
+		const res = await netzap.try("https://api.example.com", {
 			withDuration: true,
 		});
 
@@ -1386,7 +1485,7 @@ describe("fetchx.try", () => {
 
 		const controller = new AbortController();
 		const reason = new Error("user cancelled");
-		const pending = fetchx.try("https://api.example.com", {
+		const pending = netzap.try("https://api.example.com", {
 			signal: controller.signal,
 			timeout: 5000,
 		});
@@ -1398,7 +1497,7 @@ describe("fetchx.try", () => {
 	});
 });
 
-describe("fetchx.json.try", () => {
+describe("netzap.json.try", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 	});
@@ -1408,7 +1507,7 @@ describe("fetchx.json.try", () => {
 			.fn()
 			.mockResolvedValue(jsonResponse({ id: 1, name: "ada" }));
 
-		const res = await fetchx.json.try<{ id: number; name: string }>(
+		const res = await netzap.json.try<{ id: number; name: string }>(
 			"https://api.example.com/users/1",
 		);
 
@@ -1426,7 +1525,7 @@ describe("fetchx.json.try", () => {
 				),
 			);
 
-		const res = await fetchx.json.try("https://api.example.com/missing");
+		const res = await netzap.json.try("https://api.example.com/missing");
 
 		expect(res.ok).toBe(false);
 		if (!res.ok) {
@@ -1442,7 +1541,7 @@ describe("fetchx.json.try", () => {
 		const boom = new Error("offline");
 		globalThis.fetch = vi.fn().mockRejectedValue(boom);
 
-		const res = await fetchx.json.try("https://api.example.com");
+		const res = await netzap.json.try("https://api.example.com");
 
 		expect(res.ok).toBe(false);
 		if (!res.ok) expect(res.error).toBe(boom);
@@ -1453,21 +1552,9 @@ describe("fetchx.json.try", () => {
 			.fn()
 			.mockResolvedValue(new Response(null, { status: 204 }));
 
-		const res = await fetchx.json.try("https://api.example.com/ping");
+		const res = await netzap.json.try("https://api.example.com/ping");
 
 		expect(res.ok).toBe(true);
 		if (res.ok) expect(res.data).toBeUndefined();
-	});
-
-	it("composes with createClient via tryAsync (no client-level .try needed)", async () => {
-		globalThis.fetch = vi
-			.fn()
-			.mockResolvedValue(jsonResponse({ ok: true }));
-		const api = createClient({ baseUrl: "https://api.example.com" });
-
-		const res = await tryAsync(api.json.get<{ ok: boolean }>("/health"));
-
-		expect(res.ok).toBe(true);
-		if (res.ok) expect(res.data).toEqual({ ok: true });
 	});
 });
